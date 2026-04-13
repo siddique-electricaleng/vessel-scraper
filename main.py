@@ -139,10 +139,43 @@ app = FastAPI(
 )
 
 
+# ── Placeholder detection ────────────────────────────────────────────────────
+
+# URL substrings that indicate a placeholder / default "no photo" image
+_PLACEHOLDER_SUBSTRINGS: tuple[str, ...] = (
+    "cool-ship",             # VesselFinder: cool-ship2@2.png
+    "placeholder.svg",       # VesselFinder: generic placeholder
+    "placeholder.",          # Generic placeholder pattern
+    "gen_img_ship",          # VesselTracker: generic ship silhouette
+    "no-photo",              # Common convention
+    "nophoto",
+    "no_photo",
+    "no-image",
+    "noimage",
+    "default-vessel",
+    "default-ship",
+    "ship-icon",
+    "vessel-icon",
+    "no_vessel",
+)
+
+# Minimum image file size in bytes — anything below this is likely a
+# placeholder icon, not a real photograph (real ship photos are 50KB+)
+_MIN_IMAGE_BYTES = 5_000
+
+
+def _is_placeholder_url(url: str) -> bool:
+    """Return True if the URL looks like a placeholder / default image."""
+    lower = url.lower()
+    return any(p in lower for p in _PLACEHOLDER_SUBSTRINGS)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _is_trusted(url: str) -> bool:
-    """Return True iff the URL's hostname is in TRUSTED_IMAGE_HOSTS."""
+    """Return True iff the URL's hostname is in TRUSTED_IMAGE_HOSTS and it's not a placeholder."""
+    if _is_placeholder_url(url):
+        return False
     try:
         host = urlparse(url).netloc.lower().lstrip("www.")
         return host in TRUSTED_IMAGE_HOSTS or any(
@@ -251,7 +284,16 @@ def _extract_image_url(html: str) -> Optional[str]:
 
 
 async def _fetch_image(url: str) -> Optional[tuple[bytes, str]]:
-    """Download image bytes from a trusted URL. Returns (bytes, content_type) or None."""
+    """Download image bytes from a trusted URL. Returns (bytes, content_type) or None.
+
+    Rejects placeholder images by checking:
+      - URL against the placeholder blocklist
+      - Content-Type is not SVG (placeholders are often SVGs)
+      - File size >= _MIN_IMAGE_BYTES (real photos are 50KB+)
+    """
+    if _is_placeholder_url(url):
+        logger.debug("_fetch_image skipped placeholder URL: %s", url)
+        return None
     try:
         r = await _http_client.get(
             url,
@@ -261,9 +303,18 @@ async def _fetch_image(url: str) -> Optional[tuple[bytes, str]]:
             },
         )
         ct: str = r.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        if r.status_code == 200 and ct.startswith("image/"):
-            return r.content, ct
-        logger.debug("_fetch_image got HTTP %s content-type=%s for %s", r.status_code, ct, url)
+        if r.status_code != 200 or not ct.startswith("image/"):
+            logger.debug("_fetch_image got HTTP %s content-type=%s for %s", r.status_code, ct, url)
+            return None
+        # Reject SVG responses from vessel photo CDNs — always placeholders
+        if ct == "image/svg+xml":
+            logger.debug("_fetch_image rejected SVG (placeholder): %s", url)
+            return None
+        # Reject tiny images — likely placeholder icons, not real photos
+        if len(r.content) < _MIN_IMAGE_BYTES:
+            logger.debug("_fetch_image rejected too small (%d bytes): %s", len(r.content), url)
+            return None
+        return r.content, ct
     except Exception as exc:
         logger.warning("_fetch_image failed for %s: %s", url, exc)
     return None
