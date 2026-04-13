@@ -2,9 +2,35 @@ import { BASE_HEADERS } from "./constants";
 import { getCached, setCached } from "./cache";
 import { ALL_SCRAPERS } from "./scrapers";
 
+// URL substrings that indicate a placeholder / default "no photo" image
+const PLACEHOLDER_SUBSTRINGS = [
+  "cool-ship",         // VesselFinder: cool-ship2@2.png
+  "placeholder.svg",   // VesselFinder: generic placeholder
+  "placeholder.",       // Generic placeholder pattern
+  "gen_img_ship",      // VesselTracker: generic ship silhouette
+  "no-photo",
+  "nophoto",
+  "no_photo",
+  "no-image",
+  "noimage",
+  "default-vessel",
+  "default-ship",
+  "ship-icon",
+  "vessel-icon",
+  "no_vessel",
+];
+
+const MIN_IMAGE_BYTES = 5_000; // Real photos are 50KB+; placeholders are < 5KB
+
+function isPlaceholderUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return PLACEHOLDER_SUBSTRINGS.some((p) => lower.includes(p));
+}
+
 async function fetchImage(
   url: string
 ): Promise<{ bytes: Buffer; contentType: string } | null> {
+  if (isPlaceholderUrl(url)) return null;
   try {
     const res = await fetch(url, {
       headers: {
@@ -15,10 +41,13 @@ async function fetchImage(
       signal: AbortSignal.timeout(12_000),
     });
     const ct = (res.headers.get("content-type") ?? "image/jpeg").split(";")[0].trim();
-    if (res.ok && ct.startsWith("image/")) {
-      const bytes = Buffer.from(await res.arrayBuffer());
-      return { bytes, contentType: ct };
-    }
+    if (!res.ok || !ct.startsWith("image/")) return null;
+    // Reject SVG — always a placeholder on vessel photo CDNs
+    if (ct === "image/svg+xml") return null;
+    const bytes = Buffer.from(await res.arrayBuffer());
+    // Reject tiny images — placeholder icons, not real photos
+    if (bytes.length < MIN_IMAGE_BYTES) return null;
+    return { bytes, contentType: ct };
   } catch {}
   return null;
 }

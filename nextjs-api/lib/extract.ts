@@ -7,7 +7,19 @@ const IMG_URL_RE =
 const VF_PHOTO_RE =
   /https:\/\/static\.vesselfinder\.net\/ship-photo\/[0-9]+-[0-9]+(?:-[0-9a-f]+)?\/[0-3]/g;
 
+const PLACEHOLDER_SUBSTRINGS = [
+  "cool-ship", "placeholder.svg", "placeholder.", "gen_img_ship",
+  "no-photo", "nophoto", "no_photo", "no-image", "noimage",
+  "default-vessel", "default-ship", "ship-icon", "vessel-icon", "no_vessel",
+];
+
+function isPlaceholderUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return PLACEHOLDER_SUBSTRINGS.some((p) => lower.includes(p));
+}
+
 function isTrusted(url: string): boolean {
+  if (isPlaceholderUrl(url)) return false;
   try {
     const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
     if (TRUSTED_IMAGE_HOSTS.has(host)) return true;
