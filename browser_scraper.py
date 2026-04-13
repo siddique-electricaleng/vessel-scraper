@@ -46,31 +46,18 @@ def _build_urls(mmsi: str, name: str) -> list[dict]:
     slug_title = name.title().replace(" ", "-")
     query = name.replace(" ", "+")
 
+    # Only sites that benefit from JS rendering — skip ones already covered
+    # by HTTP scrapers (VesselFinder) or permanently blocked (MarineTraffic/Cloudflare)
     return [
-        {
-            "source": "marinetraffic",
-            "url": f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{mmsi}",
-            "referer": "https://www.marinetraffic.com/",
-        },
-        {
-            "source": "vesselfinder",
-            "url": f"https://www.vesselfinder.com/vessels/details/{mmsi}",
-            "referer": "https://www.vesselfinder.com/",
-        },
-        {
-            "source": "fleetmon",
-            "url": f"https://www.fleetmon.com/vessels/{slug_lower}/{mmsi}/",
-            "referer": "https://www.fleetmon.com/",
-        },
-        {
-            "source": "vesseltracker",
-            "url": f"https://www.vesseltracker.com/en/Ships/{slug_title}-{mmsi}.html",
-            "referer": "https://www.vesseltracker.com/",
-        },
         {
             "source": "shipspotting",
             "url": f"https://www.shipspotting.com/photos/gallery?ship_name={query}",
             "referer": "https://www.shipspotting.com/",
+        },
+        {
+            "source": "marinetraffic",
+            "url": f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{mmsi}",
+            "referer": "https://www.marinetraffic.com/",
         },
         {
             "source": "myshiptracking",
@@ -82,16 +69,17 @@ def _build_urls(mmsi: str, name: str) -> list[dict]:
 
 # ── Image extraction from rendered page ─────────────────────────────────────
 
-async def _extract_from_page(page, source: str) -> Optional[str]:
+async def _extract_from_page(page, source: str, vessel_name: str = "") -> Optional[str]:
     """
     Extract a vessel image URL from an already-loaded Playwright page.
 
     Strategies:
       1. <meta og:image>
-      2. <img> tags with vessel photo patterns
+      2. <img> tags with vessel photo patterns (name-filtered for galleries)
       3. CSS background-image on vessel photo containers
-      4. Network requests that fetched images during page load
     """
+    name_upper = vessel_name.upper()
+
     # 1. OG image meta tag
     try:
         og = await page.locator('meta[property="og:image"]').get_attribute("content", timeout=2000)
@@ -110,6 +98,21 @@ async def _extract_from_page(page, source: str) -> Optional[str]:
                 continue
             if not _is_real_image_url(src):
                 continue
+
+            # For gallery pages (ShipSpotting), verify vessel name matches alt/title
+            if source == "shipspotting" and name_upper:
+                alt = ((await img.get_attribute("alt")) or "").upper()
+                title = ((await img.get_attribute("title")) or "").upper()
+                try:
+                    parent_text = await img.evaluate(
+                        "el => (el.closest('a')?.textContent ?? '').toUpperCase()"
+                    )
+                except Exception:
+                    parent_text = ""
+                if name_upper not in alt and name_upper not in title and name_upper not in parent_text:
+                    logger.debug("[browser/%s] skipping non-matching img: alt=%r", source, alt)
+                    continue
+
             # Check natural size — real photos are large
             try:
                 box = await img.bounding_box(timeout=1000)
@@ -190,7 +193,7 @@ async def browser_scrape(
                 # Wait extra for images to load via JS
                 await page.wait_for_timeout(3000)
 
-                url = await _extract_from_page(page, site["source"])
+                url = await _extract_from_page(page, site["source"], name)
                 if url:
                     result_url = url
             except Exception as exc:

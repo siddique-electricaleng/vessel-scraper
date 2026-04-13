@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from urllib.parse import urlparse
 
+import struct
+
 import httpx
 from bs4 import BeautifulSoup
 from cachetools import TTLCache
@@ -251,6 +253,52 @@ def _extract_image_url(html: str) -> Optional[str]:
     return None
 
 
+_MIN_IMAGE_BYTES = 5_000
+_MIN_IMAGE_WIDTH = 300
+_MIN_IMAGE_HEIGHT = 200
+
+
+def _get_image_dimensions(data: bytes) -> Optional[tuple[int, int]]:
+    """Parse width, height from JPEG/PNG/WebP raw bytes (no dependencies)."""
+    if len(data) < 24:
+        return None
+
+    # PNG
+    if data[:4] == b"\x89PNG":
+        w, h = struct.unpack(">II", data[16:24])
+        return w, h
+
+    # JPEG — scan for SOF0..SOF3 markers
+    if data[:2] == b"\xff\xd8":
+        offset = 2
+        while offset < len(data) - 9:
+            if data[offset] != 0xFF:
+                offset += 1
+                continue
+            marker = data[offset + 1]
+            if 0xC0 <= marker <= 0xC3:
+                h, w = struct.unpack(">HH", data[offset + 5 : offset + 9])
+                return w, h
+            seg_len = struct.unpack(">H", data[offset + 2 : offset + 4])[0]
+            offset += 2 + seg_len
+        return None
+
+    # WebP
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        chunk = data[12:16]
+        if chunk == b"VP8 " and len(data) > 30:
+            w = struct.unpack("<H", data[26:28])[0] & 0x3FFF
+            h = struct.unpack("<H", data[28:30])[0] & 0x3FFF
+            return w, h
+        if chunk == b"VP8L" and len(data) > 25:
+            b0, b1, b2, b3 = data[21], data[22], data[23], data[24]
+            w = ((b0 | (b1 << 8)) & 0x3FFF) + 1
+            h = ((((b1 >> 6) | (b2 << 2) | (b3 << 10)) & 0x3FFF)) + 1
+            return w, h
+
+    return None
+
+
 async def _fetch_image(url: str) -> Optional[tuple[bytes, str]]:
     """Download image bytes from a trusted URL. Returns (bytes, content_type) or None."""
     try:
@@ -262,9 +310,22 @@ async def _fetch_image(url: str) -> Optional[tuple[bytes, str]]:
             },
         )
         ct: str = r.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-        if r.status_code == 200 and ct.startswith("image/"):
-            return r.content, ct
-        logger.debug("_fetch_image got HTTP %s content-type=%s for %s", r.status_code, ct, url)
+        if r.status_code != 200 or not ct.startswith("image/"):
+            logger.debug("_fetch_image got HTTP %s content-type=%s for %s", r.status_code, ct, url)
+            return None
+        if ct == "image/svg+xml":
+            return None
+        if len(r.content) < _MIN_IMAGE_BYTES:
+            logger.debug("Rejected %s: %d bytes too small", url, len(r.content))
+            return None
+        dims = _get_image_dimensions(r.content)
+        if dims:
+            w, h = dims
+            if w < _MIN_IMAGE_WIDTH or h < _MIN_IMAGE_HEIGHT:
+                logger.info("Rejected %s: %dx%d too small", url, w, h)
+                return None
+            logger.info("Accepted %s: %dx%d, %d bytes", url, w, h, len(r.content))
+        return r.content, ct
     except Exception as exc:
         logger.warning("_fetch_image failed for %s: %s", url, exc)
     return None
@@ -281,7 +342,18 @@ async def resolve_image(mmsi: str, name: str) -> tuple[bytes, str]:
 
     Raises HTTPException on failure.
     """
-    # ── Phase 1: Fast HTTP scrapers ───────────────────────────────────────
+    # Launch browser fallback in parallel with HTTP scrapers
+    async def _browser_task() -> Optional[str]:
+        try:
+            from browser_scraper import browser_scrape
+            return await browser_scrape(mmsi, name)
+        except Exception as exc:
+            logger.warning("Browser fallback failed: %s", exc)
+            return None
+
+    browser_future = asyncio.ensure_future(_browser_task())
+
+    # ── HTTP scrapers (fast path) ─────────────────────────────────────────
     tasks = [
         scraper(mmsi, name, _http_client, _extract_image_url)
         for scraper in ALL_SCRAPERS
@@ -299,20 +371,17 @@ async def resolve_image(mmsi: str, name: str) -> tuple[bytes, str]:
         data = await _fetch_image(img_url)
         if data:
             logger.info("Image served from %s (%d bytes)", img_url, len(data[0]))
+            browser_future.cancel()
             return data
 
-    # ── Phase 2: Headless browser fallback ────────────────────────────────
-    logger.info("HTTP scrapers failed for MMSI=%s, trying headless browser...", mmsi)
-    try:
-        from browser_scraper import browser_scrape
-        browser_url = await browser_scrape(mmsi, name)
-        if browser_url:
-            data = await _fetch_image(browser_url)
-            if data:
-                logger.info("Image served via browser from %s (%d bytes)", browser_url, len(data[0]))
-                return data
-    except Exception as exc:
-        logger.warning("Browser fallback failed: %s", exc)
+    # ── Wait for browser fallback ─────────────────────────────────────────
+    logger.info("HTTP scrapers failed for MMSI=%s, waiting for browser fallback...", mmsi)
+    browser_url = await browser_future
+    if browser_url:
+        data = await _fetch_image(browser_url)
+        if data:
+            logger.info("Image served via browser from %s (%d bytes)", browser_url, len(data[0]))
+            return data
 
     # ── Nothing worked ────────────────────────────────────────────────────
     if candidates:

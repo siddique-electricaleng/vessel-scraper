@@ -50,31 +50,18 @@ function buildUrls(mmsi: string, name: string): SiteTarget[] {
     .join("-");
   const query = name.replace(/ /g, "+");
 
+  // Only sites that benefit from JS rendering — skip ones already covered
+  // by HTTP scrapers (VesselFinder) or permanently blocked (MarineTraffic/Cloudflare)
   return [
-    {
-      source: "marinetraffic",
-      url: `https://www.marinetraffic.com/en/ais/details/ships/mmsi:${mmsi}`,
-      referer: "https://www.marinetraffic.com/",
-    },
-    {
-      source: "vesselfinder",
-      url: `https://www.vesselfinder.com/vessels/details/${mmsi}`,
-      referer: "https://www.vesselfinder.com/",
-    },
-    {
-      source: "fleetmon",
-      url: `https://www.fleetmon.com/vessels/${slugLower}/${mmsi}/`,
-      referer: "https://www.fleetmon.com/",
-    },
-    {
-      source: "vesseltracker",
-      url: `https://www.vesseltracker.com/en/Ships/${slugTitle}-${mmsi}.html`,
-      referer: "https://www.vesseltracker.com/",
-    },
     {
       source: "shipspotting",
       url: `https://www.shipspotting.com/photos/gallery?ship_name=${query}`,
       referer: "https://www.shipspotting.com/",
+    },
+    {
+      source: "marinetraffic",
+      url: `https://www.marinetraffic.com/en/ais/details/ships/mmsi:${mmsi}`,
+      referer: "https://www.marinetraffic.com/",
     },
     {
       source: "myshiptracking",
@@ -84,7 +71,9 @@ function buildUrls(mmsi: string, name: string): SiteTarget[] {
   ];
 }
 
-async function extractFromPage(page: Page, source: string): Promise<string | null> {
+async function extractFromPage(page: Page, source: string, vesselName: string): Promise<string | null> {
+  const nameUpper = vesselName.toUpperCase();
+
   // 1. OG image meta tag
   try {
     const og = await page
@@ -102,6 +91,22 @@ async function extractFromPage(page: Page, source: string): Promise<string | nul
     for (const img of imgs) {
       const src = (await img.getAttribute("src")) ?? "";
       if (!src || !src.startsWith("http") || !isRealImageUrl(src)) continue;
+
+      // For gallery pages (ShipSpotting), verify vessel name matches alt/title
+      if (source === "shipspotting") {
+        const alt = ((await img.getAttribute("alt")) ?? "").toUpperCase();
+        const title = ((await img.getAttribute("title")) ?? "").toUpperCase();
+        // Also check the parent link or nearby text
+        const parentText = await img.evaluate((el: Element) => {
+          const anchor = el.closest("a");
+          return (anchor?.textContent ?? "").toUpperCase();
+        }).catch(() => "");
+        if (!alt.includes(nameUpper) && !title.includes(nameUpper) && !parentText.includes(nameUpper)) {
+          console.log(`[browser/${source}] skipping non-matching img: alt="${alt}" title="${title}"`);
+          continue;
+        }
+      }
+
       try {
         const box = await img.boundingBox({ timeout: 1000 } as any);
         if (box && box.width > 100 && box.height > 100) {
@@ -193,7 +198,7 @@ export async function browserScrape(
         // Wait for images to load via JS
         await page.waitForTimeout(3000);
 
-        const url = await extractFromPage(page, site.source);
+        const url = await extractFromPage(page, site.source, name);
         if (url) resultUrl = url;
       } catch (err) {
         console.debug(`[browser/${site.source}] failed:`, err);
