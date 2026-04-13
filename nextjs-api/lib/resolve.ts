@@ -24,6 +24,9 @@ const MIN_IMAGE_BYTES = 5_000;  // Real photos are 50KB+; placeholders are < 5KB
 const MIN_IMAGE_WIDTH = 300;    // Real vessel photos are at least 300px wide
 const MIN_IMAGE_HEIGHT = 200;   // Real vessel photos are at least 200px tall
 
+// Known placeholder image sizes (exact byte counts) — VesselFinder "NO PHOTO" etc.
+const KNOWN_PLACEHOLDER_SIZES = new Set([34_985]);
+
 function isPlaceholderUrl(url: string): boolean {
   const lower = url.toLowerCase();
   return PLACEHOLDER_SUBSTRINGS.some((p) => lower.includes(p));
@@ -97,6 +100,11 @@ async function fetchImage(
     const bytes = Buffer.from(await res.arrayBuffer());
     // Reject tiny images — placeholder icons, not real photos
     if (bytes.length < MIN_IMAGE_BYTES) return null;
+    // Reject known placeholder images by exact file size
+    if (KNOWN_PLACEHOLDER_SIZES.has(bytes.length)) {
+      console.log(`Rejected ${url}: known placeholder (${bytes.length} bytes)`);
+      return null;
+    }
     // Reject small dimensions — generic icons / wrong vessel thumbnails
     const dims = getImageDimensions(bytes);
     if (dims) {

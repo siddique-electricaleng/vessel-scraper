@@ -256,6 +256,8 @@ def _extract_image_url(html: str) -> Optional[str]:
 _MIN_IMAGE_BYTES = 5_000
 _MIN_IMAGE_WIDTH = 300
 _MIN_IMAGE_HEIGHT = 200
+# Known placeholder image sizes (exact byte counts) — VesselFinder "NO PHOTO" etc.
+_KNOWN_PLACEHOLDER_SIZES: frozenset[int] = frozenset([34_985])
 
 
 def _get_image_dimensions(data: bytes) -> Optional[tuple[int, int]]:
@@ -317,6 +319,9 @@ async def _fetch_image(url: str) -> Optional[tuple[bytes, str]]:
             return None
         if len(r.content) < _MIN_IMAGE_BYTES:
             logger.debug("Rejected %s: %d bytes too small", url, len(r.content))
+            return None
+        if len(r.content) in _KNOWN_PLACEHOLDER_SIZES:
+            logger.info("Rejected %s: known placeholder (%d bytes)", url, len(r.content))
             return None
         dims = _get_image_dimensions(r.content)
         if dims:
