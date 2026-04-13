@@ -23,6 +23,7 @@ export const TRUSTED_IMAGE_HOSTS = new Set([
   // ShipSpotting
   "images.shipspotting.com",
   "img.shipspotting.com",
+  "www.shipspotting.com",
   "shipspotting.com",
   // FleetMon
   "photos.fleetmon.com",

@@ -76,12 +76,6 @@ export async function resolveImage(
     }
   }
 
-  if (candidates.length === 0) {
-    throw new Error(
-      `No vessel image found for MMSI ${mmsi} / '${name}' across all sources.`
-    );
-  }
-
   // Try each candidate
   for (const imgUrl of candidates) {
     const data = await fetchImage(imgUrl);
@@ -91,7 +85,30 @@ export async function resolveImage(
     }
   }
 
+  // Phase 2: Headless browser fallback
+  console.log(`HTTP scrapers failed for MMSI=${mmsi}, trying headless browser...`);
+  try {
+    const { browserScrape } = await import("./browser-scraper");
+    const browserUrl = await browserScrape(mmsi, name);
+    if (browserUrl) {
+      const data = await fetchImage(browserUrl);
+      if (data) {
+        console.log(`Image served via browser from ${browserUrl} (${data.bytes.length} bytes)`);
+        setCached(cacheKey, data);
+        return { ...data, cacheHit: false };
+      }
+    }
+  } catch (err) {
+    console.warn("Browser fallback failed:", err);
+  }
+
+  // Nothing worked
+  if (candidates.length > 0) {
+    throw new Error(
+      "Image URLs found but all download attempts failed (sources may be rate-limiting)."
+    );
+  }
   throw new Error(
-    "Image URLs found but all download attempts failed (sources may be rate-limiting)."
+    `No vessel image found for MMSI ${mmsi} / '${name}' across all sources.`
   );
 }

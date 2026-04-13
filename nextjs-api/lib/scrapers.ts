@@ -126,7 +126,7 @@ export async function scrapeShipspotting(
   extract: ExtractFn = extractImageUrl
 ): Promise<string | null> {
   const query = name.replace(/ /g, "+");
-  const url = `https://www.shipspotting.com/photos/search?query=${query}`;
+  const url = `https://www.shipspotting.com/photos/gallery?ship_name=${query}`;
   const html = await getHtml(url, "shipspotting", "https://www.shipspotting.com/");
   if (html) return extract(html);
   return null;
@@ -173,7 +173,7 @@ export async function probeHtml(
     vesselfinder: `https://www.vesselfinder.com/vessels/details/${mmsi}`,
     fleetmon: `https://www.fleetmon.com/vessels/${slug}/${mmsi}/`,
     vesseltracker: `https://www.vesseltracker.com/en/Ships/${titleSlug}-${mmsi}.html`,
-    shipspotting: `https://www.shipspotting.com/photos/search?query=${name.replace(/ /g, "+")}`,
+    shipspotting: `https://www.shipspotting.com/photos/gallery?ship_name=${name.replace(/ /g, "+")}`,
     myshiptracking: `https://www.myshiptracking.com/vessels?mmsi=${mmsi}`,
   };
 
