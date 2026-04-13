@@ -1,11 +1,15 @@
 """
 scrapers.py — per-source vessel image scrapers
 Each scraper receives (mmsi, name, client, extract_fn) and returns an image URL or None.
+
+Includes per-source rate limiting so bulk jobs don't trigger IP bans.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Callable, Optional
 
 import httpx
@@ -15,6 +19,41 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ── Per-source rate limiter ──────────────────────────────────────────────────
+
+class SourceThrottle:
+    """
+    Ensures a minimum delay between requests to each source domain.
+    Prevents rate-limit bans during bulk scraping.
+    """
+
+    def __init__(self, min_interval: float = 2.0):
+        self._min_interval = min_interval
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._last_request: dict[str, float] = {}
+
+    def _get_lock(self, source: str) -> asyncio.Lock:
+        if source not in self._locks:
+            self._locks[source] = asyncio.Lock()
+        return self._locks[source]
+
+    async def wait(self, source: str):
+        """Wait until it's safe to make another request to this source."""
+        lock = self._get_lock(source)
+        async with lock:
+            now = time.monotonic()
+            last = self._last_request.get(source, 0.0)
+            wait_for = self._min_interval - (now - last)
+            if wait_for > 0:
+                await asyncio.sleep(wait_for)
+            self._last_request[source] = time.monotonic()
+
+
+# Global throttle — 2 seconds between requests to the same source
+_throttle = SourceThrottle(min_interval=2.0)
+
+
 # ── Shared fetch helper ────────────────────────────────────────────────────────
 
 async def _get_html(
@@ -22,7 +61,10 @@ async def _get_html(
     url: str,
     referer: str = "",
     extra_headers: dict | None = None,
+    source: str = "",
 ) -> Optional[str]:
+    if source:
+        await _throttle.wait(source)
     headers: dict = {}
     if referer:
         headers["Referer"] = referer
@@ -56,7 +98,7 @@ async def scrape_marinetraffic(
 
     # 1. Detail page (contains __NEXT_DATA__ with vessel data including photos)
     detail_url = f"{base}/en/ais/details/ships/mmsi:{mmsi}"
-    html = await _get_html(client, detail_url, referer=base + "/")
+    html = await _get_html(client, detail_url, referer=base + "/", source="marinetraffic")
     if html:
         img = extract(html)
         if img:
@@ -65,7 +107,7 @@ async def scrape_marinetraffic(
 
     # 2. Photo gallery page for this vessel
     gallery_url = f"{base}/en/photos/of/ships/mmsi:{mmsi}"
-    html = await _get_html(client, gallery_url, referer=detail_url)
+    html = await _get_html(client, gallery_url, referer=detail_url, source="marinetraffic")
     if html:
         img = extract(html)
         if img:
@@ -95,7 +137,7 @@ async def scrape_vesselfinder(
     import re as _re
 
     base_url = f"https://www.vesselfinder.com/vessels/details/{mmsi}"
-    html = await _get_html(client, base_url, referer="https://www.vesselfinder.com/")
+    html = await _get_html(client, base_url, referer="https://www.vesselfinder.com/", source="vesselfinder")
     if not html:
         return None
 
@@ -149,7 +191,7 @@ async def scrape_fleetmon(
     """
     slug = name.lower().replace(" ", "-")
     url = f"https://www.fleetmon.com/vessels/{slug}/{mmsi}/"
-    html = await _get_html(client, url, referer="https://www.fleetmon.com/")
+    html = await _get_html(client, url, referer="https://www.fleetmon.com/", source="fleetmon")
     if html:
         img = extract(html)
         if img:
@@ -170,7 +212,7 @@ async def scrape_vesseltracker(
     """
     slug = name.title().replace(" ", "-")
     url = f"https://www.vesseltracker.com/en/Ships/{slug}-{mmsi}.html"
-    html = await _get_html(client, url, referer="https://www.vesseltracker.com/")
+    html = await _get_html(client, url, referer="https://www.vesseltracker.com/", source="vesseltracker")
     if html:
         img = extract(html)
         if img:
@@ -190,7 +232,7 @@ async def scrape_shipspotting(
     """
     query = name.replace(" ", "+")
     url = f"https://www.shipspotting.com/photos/search?query={query}"
-    html = await _get_html(client, url, referer="https://www.shipspotting.com/")
+    html = await _get_html(client, url, referer="https://www.shipspotting.com/", source="shipspotting")
     if html:
         img = extract(html)
         if img:
@@ -209,7 +251,7 @@ async def scrape_myshiptracking(
     MyShipTracking vessel lookup by MMSI.
     """
     url = f"https://www.myshiptracking.com/vessels?mmsi={mmsi}"
-    html = await _get_html(client, url, referer="https://www.myshiptracking.com/")
+    html = await _get_html(client, url, referer="https://www.myshiptracking.com/", source="myshiptracking")
     if html:
         img = extract(html)
         if img:

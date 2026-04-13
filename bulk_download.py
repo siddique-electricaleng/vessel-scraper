@@ -166,6 +166,7 @@ async def bulk_download(
     out_dir: Path,
     concurrency: int,
     retries: int,
+    delay: float = 1.0,
 ) -> list[DownloadResult]:
     out_dir.mkdir(parents=True, exist_ok=True)
     results: list[DownloadResult] = []
@@ -207,9 +208,15 @@ async def bulk_download(
             print("  Start the server first: uvicorn main:app --host 0.0.0.0 --port 8000")
             sys.exit(1)
 
-        print(f"  Downloading {total} vessel images (concurrency={concurrency}, retries={retries})\n")
+        eta_min = (total * delay) / 60
+        print(f"  Downloading {total} vessel images (concurrency={concurrency}, delay={delay}s, retries={retries})")
+        print(f"  Estimated time: ~{eta_min:.0f} minutes\n")
 
-        tasks = [asyncio.create_task(_worker(v)) for v in vessels]
+        # Stagger task creation to avoid burst requests
+        tasks = []
+        for v in vessels:
+            tasks.append(asyncio.create_task(_worker(v)))
+            await asyncio.sleep(delay)
         results = await asyncio.gather(*tasks)
 
     return list(results)
@@ -265,8 +272,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv", default="ships.csv", help="Path to CSV file with mmsi,name columns (default: ships.csv)")
     p.add_argument("--out", default="images", help="Output directory for images (default: images/)")
     p.add_argument("--url", default="http://127.0.0.1:8000", help="Base URL of Vessel Image API")
-    p.add_argument("--concurrency", type=int, default=5, help="Max concurrent downloads (default: 5)")
+    p.add_argument("--concurrency", type=int, default=2, help="Max concurrent downloads (default: 2, keep low to avoid bans)")
     p.add_argument("--retries", type=int, default=3, help="Retries per vessel on failure (default: 3)")
+    p.add_argument("--delay", type=float, default=1.0, help="Seconds to wait between dispatching requests (default: 1.0)")
     p.add_argument("--report", default="report.csv", help="Output CSV report path (default: report.csv)")
     return p.parse_args()
 
@@ -289,6 +297,7 @@ if __name__ == "__main__":
             out_dir=Path(args.out),
             concurrency=args.concurrency,
             retries=args.retries,
+            delay=args.delay,
         )
     )
     elapsed = time.perf_counter() - t0
