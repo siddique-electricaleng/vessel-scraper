@@ -231,7 +231,7 @@ async def scrape_shipspotting(
     ShipSpotting photo search by vessel name.
     """
     query = name.replace(" ", "+")
-    url = f"https://www.shipspotting.com/photos/search?query={query}"
+    url = f"https://www.shipspotting.com/photos/gallery?ship_name={query}"
     html = await _get_html(client, url, referer="https://www.shipspotting.com/", source="shipspotting")
     if html:
         img = extract(html)
@@ -276,7 +276,7 @@ async def probe_html(
         "vesselfinder":  f"https://www.vesselfinder.com/vessels/details/{mmsi}",
         "fleetmon":      f"https://www.fleetmon.com/vessels/{name.lower().replace(' ', '-')}/{mmsi}/",
         "vesseltracker": f"https://www.vesseltracker.com/en/Ships/{name.title().replace(' ', '-')}-{mmsi}.html",
-        "shipspotting":  f"https://www.shipspotting.com/photos/search?query={name.replace(' ', '+')}",
+        "shipspotting":  f"https://www.shipspotting.com/photos/gallery?ship_name={name.replace(' ', '+')}",
         "myshiptracking": f"https://www.myshiptracking.com/vessels?mmsi={mmsi}",
     }
     result = {}

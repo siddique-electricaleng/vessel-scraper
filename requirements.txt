@@ -15,5 +15,8 @@ lxml==6.0.4                      # fast BS4 parser backend
 # In-memory TTL cache
 cachetools==5.5.0
 
+# Headless browser fallback (for JS-rendered sites)
+playwright==1.58.0
+
 # (Optional) structured config / env vars
 python-dotenv==1.0.1

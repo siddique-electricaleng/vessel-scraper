@@ -66,6 +66,7 @@ TRUSTED_IMAGE_HOSTS: frozenset[str] = frozenset(
         # ShipSpotting
         "images.shipspotting.com",
         "img.shipspotting.com",
+        "www.shipspotting.com",
         "shipspotting.com",
         # FleetMon
         "photos.fleetmon.com",
@@ -276,9 +277,11 @@ async def resolve_image(mmsi: str, name: str) -> tuple[bytes, str]:
     Run all scrapers concurrently. For each image URL returned, attempt
     to download it. Return the first success.
 
+    Falls back to headless browser (Playwright) if all HTTP scrapers fail.
+
     Raises HTTPException on failure.
     """
-    # Fire all scrapers simultaneously
+    # ── Phase 1: Fast HTTP scrapers ───────────────────────────────────────
     tasks = [
         scraper(mmsi, name, _http_client, _extract_image_url)
         for scraper in ALL_SCRAPERS
@@ -291,13 +294,6 @@ async def resolve_image(mmsi: str, name: str) -> tuple[bytes, str]:
         if isinstance(r, str) and r and r not in candidates:
             candidates.append(r)
 
-    if not candidates:
-        logger.warning("No image URL found for MMSI=%s name=%s", mmsi, name)
-        raise HTTPException(
-            status_code=404,
-            detail=f"No vessel image found for MMSI {mmsi} / '{name}' across all sources.",
-        )
-
     # Try each candidate until one yields bytes
     for img_url in candidates:
         data = await _fetch_image(img_url)
@@ -305,9 +301,28 @@ async def resolve_image(mmsi: str, name: str) -> tuple[bytes, str]:
             logger.info("Image served from %s (%d bytes)", img_url, len(data[0]))
             return data
 
+    # ── Phase 2: Headless browser fallback ────────────────────────────────
+    logger.info("HTTP scrapers failed for MMSI=%s, trying headless browser...", mmsi)
+    try:
+        from browser_scraper import browser_scrape
+        browser_url = await browser_scrape(mmsi, name)
+        if browser_url:
+            data = await _fetch_image(browser_url)
+            if data:
+                logger.info("Image served via browser from %s (%d bytes)", browser_url, len(data[0]))
+                return data
+    except Exception as exc:
+        logger.warning("Browser fallback failed: %s", exc)
+
+    # ── Nothing worked ────────────────────────────────────────────────────
+    if candidates:
+        raise HTTPException(
+            status_code=502,
+            detail="Image URLs found but all download attempts failed (sources may be rate-limiting).",
+        )
     raise HTTPException(
-        status_code=502,
-        detail="Image URLs found but all download attempts failed (sources may be rate-limiting).",
+        status_code=404,
+        detail=f"No vessel image found for MMSI {mmsi} / '{name}' across all sources.",
     )
 
 
