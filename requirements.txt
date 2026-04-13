@@ -1,0 +1,19 @@
+# Vessel Image API — Python dependencies
+# Install: pip install -r requirements.txt
+
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1        # ASGI server with uvloop + httptools
+
+# Async HTTP client (HTTP/2 support)
+httpx[http2]==0.27.2
+
+# HTML parsing
+beautifulsoup4==4.12.3
+lxml==6.0.4                      # fast BS4 parser backend
+
+# In-memory TTL cache
+cachetools==5.5.0
+
+# (Optional) structured config / env vars
+python-dotenv==1.0.1
